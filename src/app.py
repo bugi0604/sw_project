@@ -4,8 +4,11 @@ from typing import List, Optional
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from file_generator import FileGenerator
 from models import TranslationEntry
 from parser import RenPyScriptParser
+from quality_checker import QualityChecker
+from translation_memory import TranslationMemory
 from translator import TranslationManager
 
 
@@ -13,8 +16,8 @@ class RenPyTranslatorApp:
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("RenPy Game Translator")
-        self.root.geometry("1100x720")
-        self.root.minsize(950, 650)
+        self.root.geometry("1150x760")
+        self.root.minsize(1000, 700)
 
         self.current_file: Optional[Path] = None
         self.entries: List[TranslationEntry] = []
@@ -22,6 +25,9 @@ class RenPyTranslatorApp:
 
         self.parser = RenPyScriptParser()
         self.translation_manager = TranslationManager()
+        self.file_generator = FileGenerator()
+        self.quality_checker = QualityChecker()
+        self.translation_memory = TranslationMemory()
 
         self.file_path_var = tk.StringVar(value="No file selected")
         self.status_var = tk.StringVar(value="Ready")
@@ -54,7 +60,7 @@ class RenPyTranslatorApp:
 
         subtitle_label = ttk.Label(
             header_frame,
-            text="A desktop tool for extracting and translating Ren'Py .rpy script text",
+            text="Extract, translate, edit, validate, and export Ren'Py .rpy script text.",
             font=("Arial", 10),
         )
         subtitle_label.pack(anchor=tk.W, pady=(4, 0))
@@ -71,21 +77,35 @@ class RenPyTranslatorApp:
             text="Select .rpy File",
             command=self.select_file,
         )
-        select_button.pack(side=tk.LEFT, padx=5)
+        select_button.pack(side=tk.LEFT, padx=4)
 
         analyze_button = ttk.Button(
             file_frame,
             text="Analyze",
             command=self.analyze_script,
         )
-        analyze_button.pack(side=tk.LEFT, padx=5)
+        analyze_button.pack(side=tk.LEFT, padx=4)
 
         translate_button = ttk.Button(
             file_frame,
             text="Translate",
             command=self.translate_script,
         )
-        translate_button.pack(side=tk.LEFT, padx=5)
+        translate_button.pack(side=tk.LEFT, padx=4)
+
+        quality_button = ttk.Button(
+            file_frame,
+            text="Quality Check",
+            command=self.run_quality_check,
+        )
+        quality_button.pack(side=tk.LEFT, padx=4)
+
+        export_button = ttk.Button(
+            file_frame,
+            text="Export Result",
+            command=self.export_result,
+        )
+        export_button.pack(side=tk.LEFT, padx=4)
 
     def _create_language_controls(self) -> None:
         language_frame = ttk.LabelFrame(self.root, text="Translation Settings", padding=10)
@@ -134,14 +154,15 @@ class RenPyTranslatorApp:
 
         self.result_table.column("id", width=50, anchor=tk.CENTER)
         self.result_table.column("line", width=70, anchor=tk.CENTER)
-        self.result_table.column("original", width=450)
-        self.result_table.column("translated", width=450)
+        self.result_table.column("original", width=470)
+        self.result_table.column("translated", width=470)
 
         y_scrollbar = ttk.Scrollbar(
             table_frame,
             orient=tk.VERTICAL,
             command=self.result_table.yview,
         )
+
         x_scrollbar = ttk.Scrollbar(
             table_frame,
             orient=tk.HORIZONTAL,
@@ -166,36 +187,36 @@ class RenPyTranslatorApp:
         editor_frame = ttk.LabelFrame(self.root, text="Translation Editor", padding=10)
         editor_frame.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
 
-        original_frame = ttk.LabelFrame(editor_frame, text="Original Text", padding=5)
+        text_area_frame = ttk.Frame(editor_frame)
+        text_area_frame.pack(fill=tk.BOTH, expand=True)
+
+        original_frame = ttk.LabelFrame(text_area_frame, text="Original Text", padding=5)
         original_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
         self.original_text_box = tk.Text(
             original_frame,
-            height=6,
+            height=5,
             wrap=tk.WORD,
             state=tk.DISABLED,
         )
         self.original_text_box.pack(fill=tk.BOTH, expand=True)
 
-        translated_frame = ttk.LabelFrame(editor_frame, text="Translated Text", padding=5)
+        translated_frame = ttk.LabelFrame(text_area_frame, text="Translated Text", padding=5)
         translated_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
 
         self.translated_text_box = tk.Text(
             translated_frame,
-            height=6,
+            height=5,
             wrap=tk.WORD,
         )
         self.translated_text_box.pack(fill=tk.BOTH, expand=True)
 
-        button_frame = ttk.Frame(self.root, padding=(10, 0, 10, 5))
-        button_frame.pack(fill=tk.X)
-
         save_button = ttk.Button(
-            button_frame,
+            editor_frame,
             text="Save Edited Translation",
             command=self.save_edited_translation,
         )
-        save_button.pack(side=tk.RIGHT)
+        save_button.pack(anchor=tk.E, pady=(8, 0))
 
     def _create_status_bar(self) -> None:
         status_frame = ttk.Frame(self.root)
@@ -213,7 +234,10 @@ class RenPyTranslatorApp:
     def select_file(self) -> None:
         file_path = filedialog.askopenfilename(
             title="Select Ren'Py script file",
-            filetypes=[("Ren'Py Script", "*.rpy"), ("All Files", "*.*")],
+            filetypes=[
+                ("Ren'Py Script", "*.rpy"),
+                ("All Files", "*.*"),
+            ],
         )
 
         if not file_path:
@@ -235,12 +259,20 @@ class RenPyTranslatorApp:
 
         try:
             self.entries = self.parser.parse_file(str(self.current_file))
+            self.entries = self.translation_memory.apply_memory(self.entries)
+
             self.selected_entry = None
             self._refresh_table()
             self._clear_editor()
 
-            self.status_var.set(f"Analysis completed. Extracted {len(self.entries)} text entries.")
-            messagebox.showinfo("Analysis Complete", f"Extracted {len(self.entries)} text entries.")
+            self.status_var.set(
+                f"Analysis completed. Extracted {len(self.entries)} text entries."
+            )
+
+            messagebox.showinfo(
+                "Analysis Complete",
+                f"Extracted {len(self.entries)} text entries.",
+            )
 
         except Exception as error:
             messagebox.showerror("Analysis Error", str(error))
@@ -251,15 +283,67 @@ class RenPyTranslatorApp:
             messagebox.showwarning("Warning", "Please analyze a script before translation.")
             return
 
-        source_language = self.source_language_var.get()
-        target_language = self.target_language_var.get()
+        self.translation_manager.set_language_option(
+            self.source_language_var.get(),
+            self.target_language_var.get(),
+        )
 
-        self.translation_manager.set_language_option(source_language, target_language)
         self.entries = self.translation_manager.translate_entries(self.entries)
-
         self._refresh_table()
+
         self.status_var.set("Translation completed.")
         messagebox.showinfo("Translation Complete", "Translation completed successfully.")
+
+    def run_quality_check(self) -> None:
+        if not self.entries:
+            messagebox.showwarning("Warning", "Please analyze and translate a script first.")
+            return
+
+        issues = self.quality_checker.check_entries(self.entries)
+        message = "\n".join(issues)
+
+        quality_window = tk.Toplevel(self.root)
+        quality_window.title("Quality Check Result")
+        quality_window.geometry("650x400")
+
+        text_box = tk.Text(quality_window, wrap=tk.WORD)
+        text_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        text_box.insert(tk.END, message)
+        text_box.configure(state=tk.DISABLED)
+
+        self.status_var.set("Quality check completed.")
+
+    def export_result(self) -> None:
+        if self.current_file is None:
+            messagebox.showwarning("Warning", "Please select a .rpy file first.")
+            return
+
+        if not self.entries:
+            messagebox.showwarning("Warning", "Please analyze and translate a script first.")
+            return
+
+        try:
+            translated_file = self.file_generator.generate_translated_file(
+                str(self.current_file),
+                self.entries,
+            )
+
+            csv_file = self.file_generator.export_translation_csv(self.entries)
+            memory_file = self.translation_memory.save_entries(self.entries)
+
+            messagebox.showinfo(
+                "Export Complete",
+                "Export completed successfully.\n\n"
+                f"Translated file:\n{translated_file}\n\n"
+                f"CSV file:\n{csv_file}\n\n"
+                f"Translation memory:\n{memory_file}",
+            )
+
+            self.status_var.set("Export completed.")
+
+        except Exception as error:
+            messagebox.showerror("Export Error", str(error))
+            self.status_var.set("Export failed.")
 
     def on_entry_selected(self, event) -> None:
         selected_items = self.result_table.selection()
@@ -294,12 +378,15 @@ class RenPyTranslatorApp:
         self._refresh_table()
         self._show_entry_in_editor(self.selected_entry)
 
-        self.status_var.set(f"Edited translation saved for entry #{self.selected_entry.entry_id}.")
+        self.status_var.set(
+            f"Edited translation saved for entry #{self.selected_entry.entry_id}."
+        )
 
     def _find_entry_by_id(self, entry_id: int) -> Optional[TranslationEntry]:
         for entry in self.entries:
             if entry.entry_id == entry_id:
                 return entry
+
         return None
 
     def _show_entry_in_editor(self, entry: TranslationEntry) -> None:
